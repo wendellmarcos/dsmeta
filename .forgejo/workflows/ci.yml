@@ -1,0 +1,83 @@
+# CI do dsmeta no Forgejo do dell-srv.
+# O repositório não tinha CI ativo no GitHub; este é o primeiro, no runner do dell-srv.
+#
+# - checkout com git: o actions/checkout perde o subcaminho /forgejo/ do Forgejo do dell-srv.
+#   Cada job roda numa rede docker própria; o Forgejo é http://forgejo:3030
+#   (--add-host=forgejo:host-gateway no runner);
+# - backend Spring Boot (JDK 17, ./mvnw verify) e frontend Vite (yarn build).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backend:
+    name: "Backend: Maven verify"
+    runs-on: docker
+    container:
+      image: eclipse-temurin:17-jdk
+    timeout-minutes: 30
+    steps:
+      - name: Ferramentas do sistema
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
+      - name: Checkout
+        env:
+          TOKEN: ${{ github.token }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "${SERVER%/}/${REPO}.git"
+          for base in http://forgejo:3030 http://forgejo:3000 "${SERVER%/}"; do
+            git -c "http.extraHeader=Authorization: token ${TOKEN}" fetch -q --depth 50 "$base/${REPO}.git" "$REF" 2>/dev/null && break
+          done
+          git checkout -q "$SHA"
+
+      - name: Build e testes (Maven Wrapper)
+        working-directory: backend
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp verify
+
+  frontend:
+    name: "Frontend: build"
+    runs-on: docker
+    container:
+      image: node:22-bookworm
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ github.token }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "${SERVER%/}/${REPO}.git"
+          for base in http://forgejo:3030 http://forgejo:3000 "${SERVER%/}"; do
+            git -c "http.extraHeader=Authorization: token ${TOKEN}" fetch -q --depth 50 "$base/${REPO}.git" "$REF" 2>/dev/null && break
+          done
+          git checkout -q "$SHA"
+
+      - name: Dependências
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Build
+        working-directory: frontend
+        run: yarn build
